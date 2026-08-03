@@ -1,0 +1,98 @@
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg-darker: #050505;
+  --bg-dark: #0a0a0a;
+  --bg-card: #141414;
+  --bg-hover: #1f1f1f;
+  
+  --accent: #bd00ff; /* Default: Neon purple */
+  --accent-glow: rgba(189, 0, 255, 0.3);
+  --accent-dark: #8c00bd;
+  
+  --text-primary: #f0f0f0;
+  --text-secondary: #a0a0a0;
+  --text-muted: #555555;
+  
+  --border-color: #2a2a2a;
+  
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Fira Code', monospace;
+}
+
+[data-theme="purple"] {
+  --accent: #bd00ff;
+  --accent-glow: rgba(189, 0, 255, 0.3);
+  --accent-dark: #8c00bd;
+}
+
+[data-theme="green"] {
+  --accent: #b0ff00;
+  --accent-glow: rgba(176, 255, 0, 0.3);
+  --accent-dark: #7ac200;
+}
+
+[data-theme="cyan"] {
+  --accent: #00e5ff;
+  --accent-glow: rgba(0, 229, 255, 0.3);
+  --accent-dark: #00a0b2;
+}
+
+[data-theme="red"] {
+  --accent: #ff003c;
+  --accent-glow: rgba(255, 0, 60, 0.3);
+  --accent-dark: #b20029;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-darker);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden; 
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.font-mono { font-family: var(--font-mono); }
+.text-accent { color: var(--accent); }
+.text-primary { color: var(--text-primary); }
+.text-secondary { color: var(--text-secondary); }
+
+.glow {
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+
+.box-glow {
+  box-shadow: 0 0 15px var(--accent-glow);
+}
+
+input, textarea {
+  font-family: var(--font-sans);
+}
+input:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
