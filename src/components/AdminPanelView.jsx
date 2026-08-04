@@ -21,8 +21,6 @@ const AdminPanelView = () => {
   // Editing state for messages
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [newMsgText, setNewMsgText] = useState('');
-  const [editingUser, setEditingUser] = useState(null);
-  const [newPassword, setNewPassword] = useState('');
 
   const adminFetch = (endpoint, options = {}) => {
     return fetch(`${API_URL}${endpoint}`, {
