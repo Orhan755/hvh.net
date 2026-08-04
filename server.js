@@ -36,8 +36,30 @@ db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, sender TEXT, text TEXT, time TEXT, type TEXT, deleted INTEGER DEFAULT 0, edited INTEGER DEFAULT 0)`);
   db.run(`CREATE TABLE IF NOT EXISTS private_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, receiver TEXT, text TEXT, time TEXT, type TEXT, deleted INTEGER DEFAULT 0, edited INTEGER DEFAULT 0)`);
   
-  db.run(`CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, password TEXT, admin_id TEXT)`);
-  db.run(`CREATE TABLE IF NOT EXISTS pinned_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, message_id INTEGER)`);
+  db.run(`CREATE TABLE IF NOT EXISTS channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE,
+    password TEXT,
+    admin_id TEXT,
+    is_locked INTEGER DEFAULT 0
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS pinned_messages (
+    pin_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT,
+    message_id INTEGER
+  )`);
+
+  // Migrations for V3.0
+  const migrations = [
+    `ALTER TABLE messages ADD COLUMN reply_to INTEGER`,
+    `ALTER TABLE messages ADD COLUMN reactions TEXT DEFAULT '{}'`,
+    `ALTER TABLE private_messages ADD COLUMN reply_to INTEGER`,
+    `ALTER TABLE private_messages ADD COLUMN reactions TEXT DEFAULT '{}'`
+  ];
+  migrations.forEach(q => {
+    db.run(q, () => {}); // Ignore if exists
+  });
   
   // Safely add columns to existing tables if they don't exist
   db.run("ALTER TABLE users ADD COLUMN profile_pic TEXT", () => {});
@@ -321,18 +343,38 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_dm', (msg) => {
-    db.run("INSERT INTO private_messages (sender, receiver, text, time, type) VALUES (?, ?, ?, ?, ?)", 
-      [msg.sender, msg.receiver, msg.text, msg.time, msg.type], function(err) {
-      const savedMsg = { ...msg, id: this.lastID };
+    db.run("INSERT INTO private_messages (sender, receiver, text, time, type, reply_to, reactions) VALUES (?, ?, ?, ?, ?, ?, '{}')", 
+      [msg.sender, msg.receiver, msg.text, msg.time, msg.type, msg.reply_to || null], function(err) {
+      const savedMsg = { ...msg, id: this.lastID, reactions: '{}' };
       io.emit('new_dm', savedMsg);
     });
   });
 
   socket.on('send_message', (msg) => {
-    db.run("INSERT INTO messages (channel, sender, text, time, type) VALUES (?, ?, ?, ?, ?)", 
-      [msg.channel, msg.sender, msg.text, msg.time, msg.type], function(err) {
-      const savedMsg = { ...msg, id: this.lastID };
+    db.run("INSERT INTO messages (channel, sender, text, time, type, reply_to, reactions) VALUES (?, ?, ?, ?, ?, ?, '{}')", 
+      [msg.channel, msg.sender, msg.text, msg.time, msg.type, msg.reply_to || null], function(err) {
+      const savedMsg = { ...msg, id: this.lastID, reactions: '{}' };
       io.emit('new_message', savedMsg);
+    });
+  });
+
+  socket.on('add_reaction', (data) => {
+    const table = data.isDm ? 'private_messages' : 'messages';
+    db.get(`SELECT reactions FROM ${table} WHERE id = ?`, [data.id], (err, row) => {
+      if(row) {
+        let reactions = {};
+        try { reactions = JSON.parse(row.reactions || '{}'); } catch(e){}
+        if (!reactions[data.emoji]) reactions[data.emoji] = [];
+        if (!reactions[data.emoji].includes(data.user)) {
+           reactions[data.emoji].push(data.user);
+        } else {
+           reactions[data.emoji] = reactions[data.emoji].filter(u => u !== data.user);
+        }
+        const newReactionsStr = JSON.stringify(reactions);
+        db.run(`UPDATE ${table} SET reactions = ? WHERE id = ?`, [newReactionsStr, data.id], () => {
+          io.emit('reaction_updated', { id: data.id, isDm: data.isDm, reactions: newReactionsStr, channel: data.channel });
+        });
+      }
     });
   });
 

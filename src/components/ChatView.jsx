@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Send, Hash, Users, Activity, Image as ImageIcon, Smile, Settings, Edit2, Trash2, MessageSquare, X, User, Mic, Phone, Video, Pin, Lock, CheckCheck, Plus } from 'lucide-react';
+import { Search, Send, Hash, Users, Activity, Image as ImageIcon, Smile, Settings, Edit2, Trash2, MessageSquare, X, User, Mic, Phone, Video, Pin, Lock, CheckCheck, Plus, Reply } from 'lucide-react';
 import { io } from 'socket.io-client';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002/api';
@@ -49,6 +49,8 @@ const ChatView = () => {
   const typingTimeoutRef = useRef(null);
   
   const [editingMsg, setEditingMsg] = useState(null);
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [reactionMenuMsg, setReactionMenuMsg] = useState(null);
   
   const [showSettings, setShowSettings] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('hvh_theme') || 'purple');
@@ -251,6 +253,19 @@ const ChatView = () => {
       else setChannelsData(updater);
     });
     
+    socket.on('reaction_updated', (data) => {
+      const updater = (prev) => {
+        const next = {...prev};
+        const key = data.isDm ? data.channel : data.channel;
+        if (next[key]) {
+          next[key] = next[key].map(m => m.id === data.id ? {...m, reactions: data.reactions} : m);
+        }
+        return next;
+      };
+      if (data.isDm) setDmData(updater);
+      else setChannelsData(updater);
+    });
+    
     socket.on('messages_read', (data) => {
       setDmData(prev => {
         const next = {...prev};
@@ -418,11 +433,12 @@ const ChatView = () => {
 
     if (isDm) {
       const receiver = activeChannel.substring(1);
-      socket.emit('send_dm', { sender: currentUser, receiver, text: textToSend, time, type: msgType });
+      socket.emit('send_dm', { sender: currentUser, receiver, text: textToSend, time, type: msgType, reply_to: replyingTo?.id });
     } else {
-      socket.emit('send_message', { channel: activeChannel, sender: currentUser, text: textToSend, time, type: msgType });
+      socket.emit('send_message', { channel: activeChannel, sender: currentUser, text: textToSend, time, type: msgType, reply_to: replyingTo?.id });
     }
     
+    setReplyingTo(null);
     if (!customMessage) setInputValue('');
     setShowEmojis(false);
     
@@ -852,7 +868,17 @@ const ChatView = () => {
                   </span>
                 )}
                 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexDirection: isMe ? 'row-reverse' : 'row' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', flexDirection: isMe ? 'row-reverse' : 'row' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start', position: 'relative' }}>
+                    {msg.reply_to && (
+                      <div style={{ 
+                        fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.2rem', padding: '0.3rem', 
+                        borderLeft: `2px solid var(--accent)`, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '4px',
+                        maxWidth: '250px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
+                      }}>
+                        ↪ Replied: {currentMessages.find(m => m.id === msg.reply_to)?.text || 'Message deleted'}
+                      </div>
+                    )}
                   <div className="message-bubble" style={{
                     ...(isSystem ? { borderColor: 'var(--accent)', color: 'var(--accent)', backgroundColor: 'var(--accent-glow)' } : {}),
                     ...(isVip && isMe ? { borderColor: '#ffb400', boxShadow: '0 0 5px rgba(255,180,0,0.2)' } : {}),
@@ -870,18 +896,43 @@ const ChatView = () => {
                       </>
                     )}
                   </div>
+                    {msg.reactions && msg.reactions !== '{}' && (
+                      <div style={{ display: 'flex', gap: '0.2rem', marginTop: '0.2rem', flexWrap: 'wrap' }}>
+                        {Object.entries(JSON.parse(msg.reactions)).map(([emoji, users]) => users.length > 0 && (
+                           <div key={emoji} onClick={() => socket.emit('add_reaction', { id: msg.id, isDm, emoji, user: currentUser, channel: activeChannel.startsWith('@') ? activeChannel.substring(1) : activeChannel })} style={{ fontSize: '0.75rem', padding: '0.1rem 0.3rem', backgroundColor: users.includes(currentUser) ? 'rgba(var(--accent-rgb), 0.2)' : 'var(--bg-darker)', border: `1px solid ${users.includes(currentUser) ? 'var(--accent)' : 'var(--border-color)'}`, borderRadius: '12px', cursor: 'pointer', userSelect: 'none' }}>
+                             {emoji} <span style={{opacity:0.8}}>{users.length}</span>
+                           </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   
                   {/* Edit/Delete Actions */}
-                  {!isSystem && !isDeleted && (isMe || isAdmin) && (
-                    <div style={{ display: 'flex', gap: '0.25rem', opacity: 1, transition: 'opacity 0.2s' }} className="msg-actions">
+                  {!isSystem && !isDeleted && (
+                    <div style={{ display: 'flex', gap: '0.25rem', opacity: 1, transition: 'opacity 0.2s', marginTop: '0.5rem' }} className="msg-actions">
+                       <button onClick={() => setReactionMenuMsg(msg.id)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} title="React"><Smile size={14} /></button>
+                       <button onClick={() => setReplyingTo(msg)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} title="Reply"><Reply size={14} /></button>
                        {isAdmin && !isDm && (
-                         <button onClick={() => handlePin(msg.id)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><Pin size={14} /></button>
+                         <button onClick={() => handlePin(msg.id)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} title="Pin"><Pin size={14} /></button>
                        )}
                        {isMe && msg.type !== 'image' && msg.type !== 'audio' && (
-                         <button onClick={() => handleEditMsg(msg)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><Edit2 size={14} /></button>
+                         <button onClick={() => handleEditMsg(msg)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} title="Edit"><Edit2 size={14} /></button>
                        )}
-                       <button onClick={() => handleDeleteMsg(msg.id, isDm)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><Trash2 size={14} /></button>
+                       {(isMe || isAdmin) && (
+                         <button onClick={() => handleDeleteMsg(msg.id, isDm)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} title="Delete"><Trash2 size={14} /></button>
+                       )}
                     </div>
+                  )}
+                  {reactionMenuMsg === msg.id && (
+                     <div style={{ position: 'absolute', top: '10px', [isMe ? 'right' : 'left']: '50px', backgroundColor: '#111', border: '1px solid var(--accent)', borderRadius: '8px', padding: '0.3rem', display: 'flex', gap: '0.3rem', zIndex: 20, boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+                       {EMOJIS.slice(0, 6).map(emoji => (
+                         <button key={emoji} onClick={() => {
+                           socket.emit('add_reaction', { id: msg.id, isDm, emoji, user: currentUser, channel: activeChannel.startsWith('@') ? activeChannel.substring(1) : activeChannel });
+                           setReactionMenuMsg(null);
+                         }} style={{ background:'none', border:'none', fontSize:'1.2rem', cursor:'pointer' }}>{emoji}</button>
+                       ))}
+                       <button onClick={() => setReactionMenuMsg(null)} style={{ background:'none', border:'none', color:'var(--text-muted)', cursor:'pointer' }}><X size={14}/></button>
+                     </div>
                   )}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
@@ -925,6 +976,13 @@ const ChatView = () => {
             <div style={{ position: 'absolute', top: '-40px', left: 0, right: 0, backgroundColor: 'var(--bg-card)', padding: '0.5rem 1rem', borderTop: '1px solid var(--accent)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
               <span className="text-accent">Editing message...</span>
               <button onClick={() => { setEditingMsg(null); setInputValue(''); }} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={16}/></button>
+            </div>
+          )}
+
+          {replyingTo && (
+            <div style={{ position: 'absolute', top: '-40px', left: 0, right: 0, backgroundColor: 'var(--bg-card)', padding: '0.5rem 1rem', borderTop: '1px solid var(--accent)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+              <div><span className="text-accent">Replying to {replyingTo.sender}:</span> <span style={{ color: 'var(--text-muted)' }}>{replyingTo.text}</span></div>
+              <button onClick={() => setReplyingTo(null)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={16}/></button>
             </div>
           )}
           

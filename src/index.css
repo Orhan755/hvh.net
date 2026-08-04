@@ -53,6 +53,7 @@
 body {
   font-family: var(--font-sans);
   background-color: var(--bg-darker);
+  background: radial-gradient(circle at 15% 50%, var(--accent-glow) 0%, var(--bg-darker) 70%), var(--bg-darker);
   color: var(--text-primary);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
