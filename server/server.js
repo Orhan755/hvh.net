@@ -12,7 +12,7 @@ const io = new Server(server, {
 });
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'hvh_master_2026';
 
@@ -30,11 +30,19 @@ const dbPath = path.resolve(__dirname, 'hvh.db');
 const db = new sqlite3.Database(dbPath);
 
 db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, is_vip INTEGER DEFAULT 0)`);
+  db.run(`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, is_vip INTEGER DEFAULT 0, profile_pic TEXT, status_text TEXT, join_date TEXT)`);
   db.run(`CREATE TABLE IF NOT EXISTS uids (token TEXT PRIMARY KEY, used INTEGER DEFAULT 0, usedBy TEXT)`);
   db.run(`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, date TEXT, type TEXT, message TEXT, ip TEXT, userAttempt TEXT)`);
-  db.run(`CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, sender TEXT, text TEXT, time TEXT, type TEXT)`);
+  db.run(`CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, sender TEXT, text TEXT, time TEXT, type TEXT, deleted INTEGER DEFAULT 0, edited INTEGER DEFAULT 0)`);
+  db.run(`CREATE TABLE IF NOT EXISTS private_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, receiver TEXT, text TEXT, time TEXT, type TEXT, deleted INTEGER DEFAULT 0, edited INTEGER DEFAULT 0)`);
   
+  // Safely add columns to existing tables if they don't exist
+  db.run("ALTER TABLE users ADD COLUMN profile_pic TEXT", () => {});
+  db.run("ALTER TABLE users ADD COLUMN status_text TEXT", () => {});
+  db.run("ALTER TABLE users ADD COLUMN join_date TEXT", () => {});
+  db.run("ALTER TABLE messages ADD COLUMN deleted INTEGER DEFAULT 0", () => {});
+  db.run("ALTER TABLE messages ADD COLUMN edited INTEGER DEFAULT 0", () => {});
+
   // Insert initial messages if empty
   db.get("SELECT COUNT(*) as count FROM messages", (err, row) => {
     if (row && row.count === 0) {
@@ -47,6 +55,7 @@ db.serialize(() => {
 
 app.post('/api/auth/register', (req, res) => {
   const { username, password, uid } = req.body;
+  const joinDate = new Date().toLocaleDateString();
   
   db.get("SELECT * FROM uids WHERE token = ?", [uid], (err, row) => {
     if (!row) return res.status(400).json({ error: 'Invalid UID. Token does not exist.' });
@@ -55,7 +64,7 @@ app.post('/api/auth/register', (req, res) => {
     db.get("SELECT * FROM users WHERE username = ?", [username], (err, userRow) => {
       if (userRow) return res.status(400).json({ error: 'Username already taken.' });
       
-      db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, password], (err) => {
+      db.run("INSERT INTO users (username, password, join_date) VALUES (?, ?, ?)", [username, password, joinDate], (err) => {
         if (err) return res.status(500).json({ error: 'Database error' });
         
         db.run("UPDATE uids SET used = 1, usedBy = ? WHERE token = ?", [username, uid], () => {
@@ -82,6 +91,33 @@ app.post('/api/auth/sudo', (req, res) => {
     res.status(403).json({ error: 'CRITICAL: Unauthorized sudo attempt locked out.' });
   }
 });
+
+// Profiles & DMs
+app.get('/api/users/:username/profile', (req, res) => {
+  db.get("SELECT username, is_vip, profile_pic, status_text, join_date FROM users WHERE username = ?", [req.params.username], (err, row) => {
+    if (row) {
+      res.json(row);
+    } else {
+      res.status(404).json({ error: 'User not found' });
+    }
+  });
+});
+
+app.put('/api/users/:username/profile', (req, res) => {
+  const { profile_pic, status_text } = req.body;
+  db.run("UPDATE users SET profile_pic = ?, status_text = ? WHERE username = ?", [profile_pic, status_text, req.params.username], () => {
+    res.json({ success: true });
+  });
+});
+
+app.get('/api/dms/:user1/:user2', (req, res) => {
+  const { user1, user2 } = req.params;
+  db.all("SELECT * FROM private_messages WHERE (sender = ? AND receiver = ?) OR (sender = ? AND receiver = ?) ORDER BY id ASC", 
+    [user1, user2, user2, user1], (err, rows) => {
+    res.json(rows || []);
+  });
+});
+
 
 // Admin endpoints
 app.post('/api/admin/uids', adminAuth, (req, res) => {
@@ -202,11 +238,41 @@ io.on('connection', (socket) => {
     io.emit('online_count', io.engine.clientsCount);
   });
 
+  socket.on('typing', (data) => {
+    socket.broadcast.emit('user_typing', data); // { channel, username }
+  });
+  
+  socket.on('stop_typing', (data) => {
+    socket.broadcast.emit('user_stop_typing', data);
+  });
+
+  socket.on('delete_message', (data) => {
+    // data: { id, isDm }
+    const table = data.isDm ? 'private_messages' : 'messages';
+    db.run(`UPDATE ${table} SET deleted = 1, text = '🚫 This message was deleted' WHERE id = ?`, [data.id], () => {
+      io.emit('message_deleted', data);
+    });
+  });
+
+  socket.on('edit_message', (data) => {
+    // data: { id, isDm, newText }
+    const table = data.isDm ? 'private_messages' : 'messages';
+    db.run(`UPDATE ${table} SET edited = 1, text = ? WHERE id = ?`, [data.newText, data.id], () => {
+      io.emit('message_edited', data);
+    });
+  });
+
+  socket.on('send_dm', (msg) => {
+    db.run("INSERT INTO private_messages (sender, receiver, text, time, type) VALUES (?, ?, ?, ?, ?)", 
+      [msg.sender, msg.receiver, msg.text, msg.time, msg.type], function(err) {
+      const savedMsg = { ...msg, id: this.lastID };
+      io.emit('new_dm', savedMsg);
+    });
+  });
+
   socket.on('send_message', (msg) => {
-    // msg = { channel, sender, text, time, type }
     db.run("INSERT INTO messages (channel, sender, text, time, type) VALUES (?, ?, ?, ?, ?)", 
       [msg.channel, msg.sender, msg.text, msg.time, msg.type], function(err) {
-      
       const savedMsg = { ...msg, id: this.lastID };
       io.emit('new_message', savedMsg);
     });
