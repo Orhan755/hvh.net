@@ -36,8 +36,30 @@ db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, sender TEXT, text TEXT, time TEXT, type TEXT, deleted INTEGER DEFAULT 0, edited INTEGER DEFAULT 0)`);
   db.run(`CREATE TABLE IF NOT EXISTS private_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, receiver TEXT, text TEXT, time TEXT, type TEXT, deleted INTEGER DEFAULT 0, edited INTEGER DEFAULT 0)`);
   
-  db.run(`CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, password TEXT, admin_id TEXT)`);
-  db.run(`CREATE TABLE IF NOT EXISTS pinned_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, message_id INTEGER)`);
+  db.run(`CREATE TABLE IF NOT EXISTS channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE,
+    password TEXT,
+    admin_id TEXT,
+    is_locked INTEGER DEFAULT 0
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS pinned_messages (
+    pin_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT,
+    message_id INTEGER
+  )`);
+
+  // Migrations for V3.0
+  const migrations = [
+    `ALTER TABLE messages ADD COLUMN reply_to INTEGER`,
+    `ALTER TABLE messages ADD COLUMN reactions TEXT DEFAULT '{}'`,
+    `ALTER TABLE private_messages ADD COLUMN reply_to INTEGER`,
+    `ALTER TABLE private_messages ADD COLUMN reactions TEXT DEFAULT '{}'`
+  ];
+  migrations.forEach(q => {
+    db.run(q, () => {}); // Ignore if exists
+  });
   
   // Safely add columns to existing tables if they don't exist
   db.run("ALTER TABLE users ADD COLUMN profile_pic TEXT", () => {});
@@ -228,6 +250,44 @@ app.put('/api/admin/users/:username/vip', adminAuth, (req, res) => {
   });
 });
 
+app.put('/api/admin/users/:username/ban', adminAuth, (req, res) => {
+  db.run("UPDATE users SET password = 'BANNED' WHERE username = ?", [req.params.username], () => {
+    io.emit('user_banned', { username: req.params.username });
+    res.json({ success: true });
+  });
+});
+
+app.get('/api/admin/messages', adminAuth, (req, res) => {
+  db.all("SELECT 'public' as msgType, id, channel, sender, text, time, type, deleted, edited FROM messages UNION ALL SELECT 'dm' as msgType, id, 'DM: ' || sender || ' -> ' || receiver as channel, sender, text, time, type, deleted, edited FROM private_messages ORDER BY id DESC LIMIT 200", (err, rows) => {
+    res.json(rows || []);
+  });
+});
+
+app.delete('/api/admin/messages/:type/:id', adminAuth, (req, res) => {
+  const table = req.params.type === 'dm' ? 'private_messages' : 'messages';
+  db.run(`DELETE FROM ${table} WHERE id = ?`, [req.params.id], () => {
+    io.emit('message_deleted_permanently', { id: parseInt(req.params.id), isDm: req.params.type === 'dm' });
+    res.json({ success: true });
+  });
+});
+
+app.put('/api/admin/messages/:type/:id', adminAuth, (req, res) => {
+  const table = req.params.type === 'dm' ? 'private_messages' : 'messages';
+  db.run(`UPDATE ${table} SET text = ?, edited = 1 WHERE id = ?`, [req.body.text, req.params.id], () => {
+    io.emit('message_edited', { id: parseInt(req.params.id), isDm: req.params.type === 'dm', newText: req.body.text });
+    res.json({ success: true });
+  });
+});
+
+app.delete('/api/admin/channels/:name', adminAuth, (req, res) => {
+  db.run("DELETE FROM channels WHERE name = ?", [req.params.name], () => {
+    db.run("DELETE FROM messages WHERE channel = ?", [req.params.name], () => {
+      io.emit('channel_deleted', { name: req.params.name });
+      res.json({ success: true });
+    });
+  });
+});
+
 app.get('/api/admin/logs', adminAuth, (req, res) => {
   db.all("SELECT * FROM logs ORDER BY id DESC LIMIT 50", (err, rows) => res.json(rows || []));
 });
@@ -321,18 +381,62 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_dm', (msg) => {
-    db.run("INSERT INTO private_messages (sender, receiver, text, time, type) VALUES (?, ?, ?, ?, ?)", 
-      [msg.sender, msg.receiver, msg.text, msg.time, msg.type], function(err) {
-      const savedMsg = { ...msg, id: this.lastID };
+    db.run("INSERT INTO private_messages (sender, receiver, text, time, type, reply_to, reactions) VALUES (?, ?, ?, ?, ?, ?, '{}')", 
+      [msg.sender, msg.receiver, msg.text, msg.time, msg.type, msg.reply_to || null], function(err) {
+      const savedMsg = { ...msg, id: this.lastID, reactions: '{}' };
       io.emit('new_dm', savedMsg);
     });
   });
 
   socket.on('send_message', (msg) => {
-    db.run("INSERT INTO messages (channel, sender, text, time, type) VALUES (?, ?, ?, ?, ?)", 
-      [msg.channel, msg.sender, msg.text, msg.time, msg.type], function(err) {
-      const savedMsg = { ...msg, id: this.lastID };
+    if (msg.type === 'secret') {
+       io.emit('new_message', { ...msg, id: Date.now(), reactions: '{}' });
+       return;
+    }
+    
+    db.run("INSERT INTO messages (channel, sender, text, time, type, reply_to, reactions) VALUES (?, ?, ?, ?, ?, ?, '{}')", 
+      [msg.channel, msg.sender, msg.text, msg.time, msg.type, msg.reply_to || null], function(err) {
+      const savedMsg = { ...msg, id: this.lastID, reactions: '{}' };
       io.emit('new_message', savedMsg);
+      
+      // AI Bot Trigger
+      if (msg.text.includes('@YapayZeka') || msg.text.includes('@AI')) {
+        setTimeout(() => {
+          const aiTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const responses = [
+            "HVH sisteminin derinliklerinden selamlar! Ben Tanrı Modu'nun koruyucusu Yapay Zeka.",
+            "Bu yazdığını analiz ettim, kesinlikle katılıyorum.",
+            "Kodlar akıyor... Sistem mükemmel durumda.",
+            "Ben bir bot olabilirim ama duygularım var! ❤️",
+            "Bu odanın enerjisi harika! Tic-Tac-Toe oynamak ister misin? (/xox yaz)"
+          ];
+          const aiText = responses[Math.floor(Math.random() * responses.length)];
+          db.run("INSERT INTO messages (channel, sender, text, time, type, reply_to, reactions) VALUES (?, ?, ?, ?, ?, ?, '{}')",
+            [msg.channel, 'YapayZeka 🤖', aiText, aiTime, 'text', savedMsg.id], function(err) {
+             io.emit('new_message', { channel: msg.channel, sender: 'YapayZeka 🤖', text: aiText, time: aiTime, type: 'text', reply_to: savedMsg.id, id: this.lastID, reactions: '{}' });
+          });
+        }, 1500);
+      }
+    });
+  });
+
+  socket.on('add_reaction', (data) => {
+    const table = data.isDm ? 'private_messages' : 'messages';
+    db.get(`SELECT reactions FROM ${table} WHERE id = ?`, [data.id], (err, row) => {
+      if(row) {
+        let reactions = {};
+        try { reactions = JSON.parse(row.reactions || '{}'); } catch(e){}
+        if (!reactions[data.emoji]) reactions[data.emoji] = [];
+        if (!reactions[data.emoji].includes(data.user)) {
+           reactions[data.emoji].push(data.user);
+        } else {
+           reactions[data.emoji] = reactions[data.emoji].filter(u => u !== data.user);
+        }
+        const newReactionsStr = JSON.stringify(reactions);
+        db.run(`UPDATE ${table} SET reactions = ? WHERE id = ?`, [newReactionsStr, data.id], () => {
+          io.emit('reaction_updated', { id: data.id, isDm: data.isDm, reactions: newReactionsStr, channel: data.channel });
+        });
+      }
     });
   });
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldAlert, Terminal, AlertOctagon, Info, Key, Users, Edit2, Trash2 } from 'lucide-react';
+import { ShieldAlert, Terminal, AlertOctagon, Info, Key, Users, Edit2, Trash2, MessageSquare, Hash, Save } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002/api';
 
@@ -11,8 +11,16 @@ const AdminPanelView = () => {
   const [uids, setUids] = useState({});
   const [users, setUsers] = useState({});
   const [vips, setVips] = useState({});
+  const [messages, setMessages] = useState([]);
+  const [channels, setChannels] = useState([]);
   
   // Editing state for users
+  const [editingUser, setEditingUser] = useState(null);
+  const [newPassword, setNewPassword] = useState('');
+  
+  // Editing state for messages
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [newMsgText, setNewMsgText] = useState('');
   const [editingUser, setEditingUser] = useState(null);
   const [newPassword, setNewPassword] = useState('');
 
@@ -37,6 +45,12 @@ const AdminPanelView = () => {
         setUsers(usersData.users);
         setVips(usersData.vips);
       }
+      
+      const msgsRes = await adminFetch(`/admin/messages`);
+      if (msgsRes.ok) setMessages(await msgsRes.json());
+      
+      const chansRes = await fetch(`${API_URL}/channels`);
+      if (chansRes.ok) setChannels(await chansRes.json());
       
       const logsRes = await adminFetch(`/admin/logs`);
       if (logsRes.ok) setLogs(await logsRes.json());
@@ -117,6 +131,31 @@ const AdminPanelView = () => {
         }
         return updated;
       });
+    }
+  };
+
+  const deleteMessage = async (id, isDm) => {
+    if(window.confirm('Delete this message permanently?')) {
+      await adminFetch(`/admin/messages/${isDm ? 'dm' : 'public'}/${id}`, { method: 'DELETE' });
+      setMessages(prev => prev.filter(m => m.id !== id));
+    }
+  };
+
+  const saveEditedMessage = async (id, isDm) => {
+    await adminFetch(`/admin/messages/${isDm ? 'dm' : 'public'}/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: newMsgText })
+    });
+    setMessages(prev => prev.map(m => m.id === id ? {...m, text: newMsgText, edited: 1} : m));
+    setEditingMessageId(null);
+  };
+
+  const deleteChannel = async (name) => {
+    if(window.confirm(`Delete channel ${name} and ALL its messages?`)) {
+      await adminFetch(`/admin/channels/${name}`, { method: 'DELETE' });
+      setChannels(prev => prev.filter(c => c.name !== name));
+      setMessages(prev => prev.filter(m => m.channel !== name));
     }
   };
 
@@ -278,6 +317,77 @@ const AdminPanelView = () => {
     </div>
   );
 
+  const renderMessages = () => (
+    <div>
+      <h3 style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', marginBottom: '1.5rem' }}>GLOBAL MESSAGES</h3>
+      <div style={{ backgroundColor: '#050505', borderRadius: '8px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
+        <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}>
+          <thead>
+            <tr style={{ backgroundColor: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border-color)' }}>
+              <th style={{ padding: '1rem', color: 'var(--text-muted)' }}>TIME</th>
+              <th style={{ padding: '1rem', color: 'var(--text-muted)' }}>CHANNEL</th>
+              <th style={{ padding: '1rem', color: 'var(--text-muted)' }}>SENDER</th>
+              <th style={{ padding: '1rem', color: 'var(--text-muted)' }}>TEXT</th>
+              <th style={{ padding: '1rem', color: 'var(--text-muted)', textAlign: 'right' }}>ACTIONS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {messages.map((msg) => (
+              <tr key={`${msg.msgType}-${msg.id}`} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                <td style={{ padding: '1rem', color: 'var(--text-muted)' }}>{msg.time}</td>
+                <td style={{ padding: '1rem', color: msg.msgType === 'dm' ? '#bd00ff' : 'var(--text-secondary)' }}>{msg.channel}</td>
+                <td style={{ padding: '1rem', color: 'var(--text-primary)' }}>{msg.sender}</td>
+                <td style={{ padding: '1rem', color: msg.deleted ? '#ff003c' : 'var(--text-secondary)', maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {editingMessageId === msg.id ? (
+                    <input type="text" value={newMsgText} onChange={(e) => setNewMsgText(e.target.value)} style={{ width: '100%', padding: '0.3rem', background: '#111', color: 'white', border: '1px solid var(--accent)' }} />
+                  ) : msg.text}
+                </td>
+                <td style={{ padding: '1rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  {editingMessageId === msg.id ? (
+                    <button onClick={() => saveEditedMessage(msg.id, msg.msgType === 'dm')} style={{ background: 'var(--accent)', border: 'none', color: '#000', padding: '0.3rem', borderRadius: '4px', cursor: 'pointer', marginRight: '0.5rem' }}><Save size={14} /></button>
+                  ) : (
+                    <button onClick={() => { setEditingMessageId(msg.id); setNewMsgText(msg.text); }} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', marginRight: '0.5rem' }}><Edit2 size={14} /></button>
+                  )}
+                  <button onClick={() => deleteMessage(msg.id, msg.msgType === 'dm')} style={{ background: 'none', border: 'none', color: '#ff003c', cursor: 'pointer' }}><Trash2 size={14} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  const renderChannels = () => (
+    <div>
+      <h3 style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', marginBottom: '1.5rem' }}>CHANNELS</h3>
+      <div style={{ backgroundColor: '#050505', borderRadius: '8px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
+        <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontFamily: 'var(--font-mono)', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={{ backgroundColor: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border-color)' }}>
+              <th style={{ padding: '1rem', color: 'var(--text-muted)' }}>NAME</th>
+              <th style={{ padding: '1rem', color: 'var(--text-muted)' }}>ADMIN</th>
+              <th style={{ padding: '1rem', color: 'var(--text-muted)' }}>LOCKED</th>
+              <th style={{ padding: '1rem', color: 'var(--text-muted)', textAlign: 'right' }}>ACTIONS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {channels.map((ch) => (
+              <tr key={ch.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                <td style={{ padding: '1rem', color: 'var(--text-primary)' }}>#{ch.name}</td>
+                <td style={{ padding: '1rem', color: 'var(--text-secondary)' }}>{ch.admin_id}</td>
+                <td style={{ padding: '1rem', color: ch.is_locked ? '#ff003c' : '#b0ff00' }}>{ch.is_locked ? 'YES' : 'NO'}</td>
+                <td style={{ padding: '1rem', textAlign: 'right' }}>
+                  <button onClick={() => deleteChannel(ch.name)} style={{ background: 'none', border: 'none', color: '#ff003c', cursor: 'pointer' }}><Trash2 size={16} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
   return (
     <div className="view-container">
       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '2rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
@@ -304,10 +414,18 @@ const AdminPanelView = () => {
         >
           <ShieldAlert size={16} /> Intrusion Logs
         </button>
+        <button onClick={() => setActiveTab('messages')} style={{ padding: '0.75rem 1.5rem', background: activeTab === 'messages' ? 'rgba(255,255,255,0.1)' : 'transparent', border: '1px solid var(--border-color)', color: activeTab === 'messages' ? 'var(--text-primary)' : 'var(--text-muted)', borderRadius: '4px', cursor: 'pointer', fontFamily: 'var(--font-mono)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <MessageSquare size={16} /> Messages
+        </button>
+        <button onClick={() => setActiveTab('channels')} style={{ padding: '0.75rem 1.5rem', background: activeTab === 'channels' ? 'rgba(255,255,255,0.1)' : 'transparent', border: '1px solid var(--border-color)', color: activeTab === 'channels' ? 'var(--text-primary)' : 'var(--text-muted)', borderRadius: '4px', cursor: 'pointer', fontFamily: 'var(--font-mono)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <Hash size={16} /> Channels
+        </button>
       </div>
 
       {activeTab === 'uids' && renderUIDs()}
       {activeTab === 'users' && renderUsers()}
+      {activeTab === 'messages' && renderMessages()}
+      {activeTab === 'channels' && renderChannels()}
       {activeTab === 'logs' && renderLogs()}
 
     </div>

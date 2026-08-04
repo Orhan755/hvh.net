@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Send, Hash, Users, Activity, Image as ImageIcon, Smile, Settings, Edit2, Trash2, MessageSquare, X, User, Mic, Phone, Video, Pin, Lock, CheckCheck, Plus, Reply } from 'lucide-react';
+import { Search, Send, Hash, Users, Activity, Image as ImageIcon, Smile, Settings, Edit2, Trash2, MessageSquare, X, User, Mic, Phone, Video, Pin, Lock, CheckCheck, Plus, Reply, EyeOff, Gamepad2 } from 'lucide-react';
 import { io } from 'socket.io-client';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002/api';
@@ -51,6 +51,7 @@ const ChatView = () => {
   const [editingMsg, setEditingMsg] = useState(null);
   const [replyingTo, setReplyingTo] = useState(null);
   const [reactionMenuMsg, setReactionMenuMsg] = useState(null);
+  const [secretMode, setSecretMode] = useState(false);
   
   const [showSettings, setShowSettings] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('hvh_theme') || 'purple');
@@ -131,6 +132,28 @@ const ChatView = () => {
     if (file) processAndSendImage(file);
   };
 
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      if (file.type.startsWith('image/')) {
+        reader.onload = (e) => {
+          setCustomMessage({ type: 'image', text: e.target.result });
+          setInputValue(`[Image Attachment]`);
+        };
+        reader.readAsDataURL(file);
+      } else if (file.type.startsWith('video/')) {
+        reader.onload = (e) => {
+          setCustomMessage({ type: 'video', text: e.target.result });
+          setInputValue(`[Video Attachment]`);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        alert('File type not supported yet.');
+      }
+    }
+  };
+
   const handleProfilePicUpload = (e) => {
     const file = e.target.files[0];
     if (!file || !file.type.startsWith('image/')) return;
@@ -198,6 +221,11 @@ const ChatView = () => {
     socket.on('new_message', (msg) => {
       setChannelsData(prev => ({ ...prev, [msg.channel]: [...(prev[msg.channel] || []), msg] }));
       if (msg.sender !== currentUser && soundEnabled) playBeep();
+      if (msg.type === 'secret') {
+        setTimeout(() => {
+          setChannelsData(prev => ({ ...prev, [msg.channel]: (prev[msg.channel] || []).filter(m => m.id !== msg.id) }));
+        }, 10000);
+      }
     });
     
     socket.on('new_dm', (msg) => {
@@ -205,6 +233,11 @@ const ChatView = () => {
       setDmData(prev => ({ ...prev, [partner]: [...(prev[partner] || []), msg] }));
       setDmUsers(prev => prev.includes(partner) ? prev : [...prev, partner]);
       if (msg.sender !== currentUser && soundEnabled) playBeep();
+      if (msg.type === 'secret') {
+        setTimeout(() => {
+          setDmData(prev => ({ ...prev, [partner]: (prev[partner] || []).filter(m => m.id !== msg.id) }));
+        }, 10000);
+      }
     });
     
     socket.on('vip_update', (data) => {
@@ -230,7 +263,7 @@ const ChatView = () => {
     socket.on('message_deleted', (data) => {
       const updater = (prev) => {
         const next = {...prev};
-        const key = data.isDm ? data.channel : data.channel; // channel name or partner name
+        const key = data.isDm ? data.channel : data.channel; 
         if (next[key]) {
           next[key] = next[key].map(m => m.id === data.id ? {...m, deleted: 1, text: '🚫 This message was deleted'} : m);
         }
@@ -251,6 +284,33 @@ const ChatView = () => {
       };
       if (data.isDm) setDmData(updater);
       else setChannelsData(updater);
+    });
+    
+    socket.on('message_deleted_permanently', (data) => {
+      const updater = (prev) => {
+        const next = {...prev};
+        Object.keys(next).forEach(key => {
+          next[key] = next[key].filter(m => m.id !== data.id);
+        });
+        return next;
+      };
+      if (data.isDm) setDmData(updater);
+      else setChannelsData(updater);
+    });
+    
+    socket.on('channel_deleted', (data) => {
+      setChannelsList(prev => prev.filter(c => c.name !== data.name));
+      if (activeChannel === data.name) {
+        setActiveChannel('general');
+      }
+    });
+    
+    socket.on('user_banned', (data) => {
+      if (data.username === currentUser) {
+        alert('YOU HAVE BEEN BANNED.');
+        localStorage.removeItem('hvh_session');
+        window.location.reload();
+      }
     });
     
     socket.on('reaction_updated', (data) => {
@@ -417,8 +477,8 @@ const ChatView = () => {
       return;
     }
     
-    const textToSend = customMessage ? customMessage.text : inputValue;
-    const msgType = customMessage ? customMessage.type : 'text';
+    let textToSend = customMessage ? customMessage.text : inputValue;
+    const customType = customMessage ? customMessage.type : null;
     
     if (!textToSend.trim()) return;
 
@@ -430,6 +490,16 @@ const ChatView = () => {
     }
 
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    let msgType = 'text';
+    if (customType) {
+      msgType = customType;
+    } else if (secretMode) {
+      msgType = 'secret';
+    } else if (textToSend.startsWith('/xox')) {
+      msgType = 'xox';
+      const opponent = textToSend.split(' ')[1]?.replace('@', '');
+      textToSend = JSON.stringify({ board: Array(9).fill(null), turn: 'X', players: { X: currentUser, O: opponent || 'Anyone' }, winner: null });
+    }
 
     if (isDm) {
       const receiver = activeChannel.substring(1);
@@ -439,6 +509,7 @@ const ChatView = () => {
     }
     
     setReplyingTo(null);
+    setSecretMode(false);
     if (!customMessage) setInputValue('');
     setShowEmojis(false);
     
@@ -596,6 +667,32 @@ const ChatView = () => {
   const endCall = () => {
     socket.emit('end_call', { to: callState === 'incoming' ? callData.from : activeChannel.substring(1), from: currentUser });
     endCallLocal();
+  };
+
+  const handleXoxClick = (msg, index) => {
+    try {
+      const state = JSON.parse(msg.text);
+      if (state.winner || state.board[index]) return;
+      const myRole = state.players.X === currentUser ? 'X' : (state.players.O === currentUser || state.players.O === 'Anyone' ? 'O' : null);
+      if (!myRole || state.turn !== myRole) return;
+      
+      const newBoard = [...state.board];
+      newBoard[index] = myRole;
+      
+      // Check win
+      const lines = [[0,1,2], [3,4,5], [6,7,8], [0,3,6], [1,4,7], [2,5,8], [0,4,8], [2,4,6]];
+      let winner = null;
+      for (let [a,b,c] of lines) {
+        if (newBoard[a] && newBoard[a] === newBoard[b] && newBoard[a] === newBoard[c]) winner = myRole;
+      }
+      if (!winner && !newBoard.includes(null)) winner = 'Draw';
+      
+      const newState = { ...state, board: newBoard, turn: myRole === 'X' ? 'O' : 'X', winner };
+      if (state.players.O === 'Anyone' && myRole === 'O') newState.players.O = currentUser;
+      
+      const isDm = activeChannel.startsWith('@');
+      socket.emit('edit_message', { id: msg.id, isDm, newText: JSON.stringify(newState), channel: activeChannel.startsWith('@') ? activeChannel.substring(1) : activeChannel });
+    } catch(e) {}
   };
 
   // Check if anyone is typing in current channel
@@ -883,12 +980,38 @@ const ChatView = () => {
                     ...(isSystem ? { borderColor: 'var(--accent)', color: 'var(--accent)', backgroundColor: 'var(--accent-glow)' } : {}),
                     ...(isVip && isMe ? { borderColor: '#ffb400', boxShadow: '0 0 5px rgba(255,180,0,0.2)' } : {}),
                     ...(isDeleted ? { borderColor: 'var(--border-color)', color: 'var(--text-muted)', backgroundColor: 'transparent', fontStyle: 'italic' } : {}),
-                    padding: msg.type === 'image' && !isDeleted ? '0.5rem' : '1rem'
+                    ...(msg.type === 'secret' ? { border: '1px dashed #ff003c', backgroundColor: 'rgba(255,0,60,0.05)', color: '#ff003c' } : {}),
+                    padding: msg.type === 'image' && !isDeleted ? '0.5rem' : '1rem 1.25rem'
                   }}>
                     {msg.type === 'audio' && !isDeleted ? (
                       <audio controls src={msg.text} style={{ height: '35px', maxWidth: '250px' }} />
                     ) : msg.type === 'image' && !isDeleted ? (
                       <img src={msg.text} alt="Attachment" style={{ maxWidth: '300px', maxHeight: '300px', borderRadius: '4px', objectFit: 'contain' }} />
+                    ) : msg.type === 'video' && !isDeleted ? (
+                      <video controls src={msg.text} style={{ maxWidth: '300px', maxHeight: '300px', borderRadius: '4px' }} />
+                    ) : msg.type === 'xox' && !isDeleted ? (
+                      (() => {
+                        try {
+                          const state = JSON.parse(msg.text);
+                          return (
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                              <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>TIC-TAC-TOE: {state.players.X} vs {state.players.O}</div>
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 40px)', gap: '4px', backgroundColor: 'var(--border-color)', padding: '4px', borderRadius: '8px' }}>
+                                {state.board.map((cell, idx) => (
+                                  <div key={idx} onClick={() => handleXoxClick(msg, idx)} style={{ width: '40px', height: '40px', backgroundColor: 'var(--bg-card)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', fontWeight: 'bold', color: cell === 'X' ? 'var(--accent)' : '#ffb400', cursor: (!state.winner && !cell) ? 'pointer' : 'default', borderRadius: '4px' }}>{cell}</div>
+                                ))}
+                              </div>
+                              <div style={{ fontSize: '0.9rem', fontWeight: 'bold', color: state.winner ? '#b0ff00' : 'var(--text-primary)' }}>
+                                {state.winner ? (state.winner === 'Draw' ? 'DRAW!' : `WINNER: ${state.winner}`) : `TURN: ${state.turn}`}
+                              </div>
+                            </div>
+                          );
+                        } catch(e) { return <span>[Invalid Game]</span> }
+                      })()
+                    ) : msg.type === 'secret' && !isDeleted ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <EyeOff size={16} /> <span>{msg.text}</span>
+                      </div>
                     ) : (
                       <>
                         {msg.text}
@@ -994,11 +1117,19 @@ const ChatView = () => {
               <ImageIcon size={20} />
             </button>
             
+            <button type="button" onClick={() => setSecretMode(!secretMode)} style={{ background: secretMode ? 'rgba(255,0,60,0.2)' : 'none', border: secretMode ? '1px solid #ff003c' : 'none', borderRadius: '4px', color: secretMode ? '#ff003c' : 'var(--text-muted)', cursor: 'pointer', padding: '0.3rem', marginLeft: '0.5rem' }} title="Toggle Secret Mode">
+              <EyeOff size={20} />
+            </button>
+            <button type="button" onClick={() => { setInputValue('/xox '); inputRef.current?.focus(); }} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.3rem', marginLeft: '0.5rem' }} title="Play Tic-Tac-Toe">
+              <Gamepad2 size={20} />
+            </button>
+            
             <input 
+              ref={inputRef}
               type="text" 
               value={inputValue}
               onChange={handleInputChange}
-              placeholder={editingMsg ? "Edit your message..." : `Send a message to ${isDm ? '@' : '#'}${isDm ? activeChannel.substring(1) : activeChannel}...`} 
+              placeholder={secretMode ? "Type a secret message..." : "Type a message... (/xox @user for game)"} 
               style={{ paddingLeft: '0.5rem' }}
             />
             
