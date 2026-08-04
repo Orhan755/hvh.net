@@ -73,6 +73,7 @@ const ChatView = () => {
   
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const inputRef = useRef(null);
   
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef(null);
