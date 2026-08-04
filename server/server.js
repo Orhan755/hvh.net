@@ -36,17 +36,30 @@ db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, sender TEXT, text TEXT, time TEXT, type TEXT, deleted INTEGER DEFAULT 0, edited INTEGER DEFAULT 0)`);
   db.run(`CREATE TABLE IF NOT EXISTS private_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, receiver TEXT, text TEXT, time TEXT, type TEXT, deleted INTEGER DEFAULT 0, edited INTEGER DEFAULT 0)`);
   
+  db.run(`CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, password TEXT, admin_id TEXT)`);
+  db.run(`CREATE TABLE IF NOT EXISTS pinned_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, message_id INTEGER)`);
+  
   // Safely add columns to existing tables if they don't exist
   db.run("ALTER TABLE users ADD COLUMN profile_pic TEXT", () => {});
   db.run("ALTER TABLE users ADD COLUMN status_text TEXT", () => {});
   db.run("ALTER TABLE users ADD COLUMN join_date TEXT", () => {});
+  db.run("ALTER TABLE users ADD COLUMN last_seen TEXT", () => {});
   db.run("ALTER TABLE messages ADD COLUMN deleted INTEGER DEFAULT 0", () => {});
   db.run("ALTER TABLE messages ADD COLUMN edited INTEGER DEFAULT 0", () => {});
+  db.run("ALTER TABLE private_messages ADD COLUMN is_read INTEGER DEFAULT 0", () => {});
 
   // Insert initial messages if empty
   db.get("SELECT COUNT(*) as count FROM messages", (err, row) => {
     if (row && row.count === 0) {
       db.run(`INSERT INTO messages (channel, sender, text, time, type) VALUES ('general', 'system', 'Welcome to the HVH underground.', '12:00', 'text')`);
+    }
+  });
+
+  db.get("SELECT COUNT(*) as count FROM channels", (err, row) => {
+    if (row && row.count === 0) {
+      db.run(`INSERT INTO channels (name, password, admin_id) VALUES ('general', '', 'system')`);
+      db.run(`INSERT INTO channels (name, password, admin_id) VALUES ('config-sharing', '', 'system')`);
+      db.run(`INSERT INTO channels (name, password, admin_id) VALUES ('media', '', 'system')`);
     }
   });
 });
@@ -94,7 +107,7 @@ app.post('/api/auth/sudo', (req, res) => {
 
 // Profiles & DMs
 app.get('/api/users/:username/profile', (req, res) => {
-  db.get("SELECT username, is_vip, profile_pic, status_text, join_date FROM users WHERE username = ?", [req.params.username], (err, row) => {
+  db.get("SELECT username, is_vip, profile_pic, status_text, join_date, last_seen FROM users WHERE username = ?", [req.params.username], (err, row) => {
     if (row) {
       res.json(row);
     } else {
@@ -114,6 +127,40 @@ app.get('/api/dms/:user1/:user2', (req, res) => {
   const { user1, user2 } = req.params;
   db.all("SELECT * FROM private_messages WHERE (sender = ? AND receiver = ?) OR (sender = ? AND receiver = ?) ORDER BY id ASC", 
     [user1, user2, user2, user1], (err, rows) => {
+    res.json(rows || []);
+  });
+});
+
+app.get('/api/channels', (req, res) => {
+  db.all("SELECT id, name, admin_id, CASE WHEN password != '' THEN 1 ELSE 0 END as is_locked FROM channels", (err, rows) => {
+    res.json(rows || []);
+  });
+});
+
+app.post('/api/channels', (req, res) => {
+  const { name, password, admin_id } = req.body;
+  if (!name) return res.status(400).json({error: 'Channel name required'});
+  db.run("INSERT INTO channels (name, password, admin_id) VALUES (?, ?, ?)", [name, password || '', admin_id], function(err) {
+    if (err) return res.status(400).json({error: 'Channel already exists'});
+    io.emit('new_channel', { id: this.lastID, name, admin_id, is_locked: !!password });
+    res.json({ success: true, id: this.lastID, name, is_locked: !!password });
+  });
+});
+
+app.post('/api/channels/verify', (req, res) => {
+  const { name, password } = req.body;
+  db.get("SELECT * FROM channels WHERE name = ?", [name], (err, row) => {
+    if (!row) return res.status(404).json({error: 'Channel not found'});
+    if (!row.password || row.password === password) {
+      res.json({ success: true });
+    } else {
+      res.status(403).json({ error: 'Invalid password' });
+    }
+  });
+});
+
+app.get('/api/pins/:channel', (req, res) => {
+  db.all(`SELECT p.id as pin_id, m.* FROM pinned_messages p JOIN messages m ON p.message_id = m.id WHERE p.channel = ?`, [req.params.channel], (err, rows) => {
     res.json(rows || []);
   });
 });
@@ -208,7 +255,7 @@ app.get('/api/stats', (req, res) => {
 // Initial Messages
 app.get('/api/messages', (req, res) => {
   db.all("SELECT * FROM messages ORDER BY id ASC", (err, rows) => {
-    const channels = { 'general': [], 'config-sharing': [], 'media': [] };
+    const channels = {};
     if(rows) {
         rows.forEach(msg => {
         if (!channels[msg.channel]) channels[msg.channel] = [];
@@ -234,8 +281,19 @@ io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
   io.emit('online_count', io.engine.clientsCount);
   
+  socket.on('set_active', (username) => {
+    socket.username = username;
+    db.run("UPDATE users SET last_seen = 'Online' WHERE username = ?", [username]);
+    io.emit('user_status', { username, status: 'Online' });
+  });
+
   socket.on('disconnect', () => {
     io.emit('online_count', io.engine.clientsCount);
+    if (socket.username) {
+      const time = new Date().toLocaleString();
+      db.run("UPDATE users SET last_seen = ? WHERE username = ?", [time, socket.username]);
+      io.emit('user_status', { username: socket.username, status: time });
+    }
   });
 
   socket.on('typing', (data) => {
@@ -276,6 +334,38 @@ io.on('connection', (socket) => {
       const savedMsg = { ...msg, id: this.lastID };
       io.emit('new_message', savedMsg);
     });
+  });
+
+  // Next-Gen Feature Sockets
+  socket.on('mark_read', (data) => {
+    db.run("UPDATE private_messages SET is_read = 1 WHERE sender = ? AND receiver = ?", [data.sender, data.receiver], () => {
+      io.emit('messages_read', data);
+    });
+  });
+
+  socket.on('pin_message', (data) => {
+    db.run("INSERT INTO pinned_messages (channel, message_id) VALUES (?, ?)", [data.channel, data.message_id], function(err) {
+       io.emit('message_pinned', { pin_id: this.lastID, channel: data.channel, message_id: data.message_id });
+    });
+  });
+  
+  socket.on('unpin_message', (data) => {
+    db.run("DELETE FROM pinned_messages WHERE id = ?", [data.pin_id], () => {
+       io.emit('message_unpinned', data);
+    });
+  });
+
+  // WebRTC Signaling
+  socket.on('call_user', (data) => {
+    socket.broadcast.emit('incoming_call', data);
+  });
+
+  socket.on('answer_call', (data) => {
+    socket.broadcast.emit('call_accepted', data);
+  });
+  
+  socket.on('end_call', (data) => {
+    socket.broadcast.emit('call_ended', data);
   });
 });
 
