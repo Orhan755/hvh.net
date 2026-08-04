@@ -355,6 +355,8 @@ const ChatView = () => {
     }
   }, [activeChannel, currentUser]);
   
+  const isDm = activeChannel.startsWith('@');
+
   const fetchPins = (channel) => {
     fetch(`${API_URL}/pins/${channel}`)
       .then(r => r.json())
@@ -367,7 +369,6 @@ const ChatView = () => {
     else setPinnedMsgs([]);
   }, [activeChannel, isDm]);
 
-  const isDm = activeChannel.startsWith('@');
   const currentMessages = isDm ? (dmData[activeChannel.substring(1)] || []) : (channelsData[activeChannel] || []);
 
   const scrollToBottom = () => {
